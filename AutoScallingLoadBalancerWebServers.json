@@ -1,0 +1,215 @@
+{
+    "Parameters": {
+        "KeyName": {
+            "Description": "El par de claves permite acceso a la instancia EC2",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+        "Subnets": {
+            "Type": "List<AWS::EC2::Subnet::Id>",
+            "Description": "Lista de subredes para el grupo de auto escalado"
+        },
+        "CustomVPC": {
+            "Description": "Selecciona un VPC disponible en tu cuenta",
+            "Type": "AWS::EC2::VPC::Id"
+        }
+    },
+    "Resources": {
+        "SERVIDOR1": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "ImageId": "ami-09d3b3274b6c5d4aa",
+                "SecurityGroups": [
+                    {
+                        "Ref": "SECURITYGROUP3"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64" : {
+                        "Fn::Sub": "#!/bin/bash \nyum update -y \nyum install -y httpd \nsystemctl enable httpd \nsystemctl start httpd \necho \"<h1> Holap, funciono desde $(hostname -f)</h1>\" > /var/www/html/index.html"
+                    }
+                },
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Servidor 1"
+                    }
+                ],
+                "AvailabilityZone": "us-east-1b"
+            }
+        },
+        "SECURITYGROUP3": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupName": "WebBalancingRules",
+                "GroupDescription": "Permite HTTP por el puerto 80",
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "CidrIp": "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "CidrIp": "0.0.0.0/0"
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "InstanceSecurityGroup"
+                    }
+                ]
+            }
+        },
+        "SERVIDOR2": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "ImageId": "ami-09d3b3274b6c5d4aa",
+                "SecurityGroups": [
+                    {
+                        "Ref": "SECURITYGROUP3"
+                    }
+                ],
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Sub": "#!/bin/bash \nyum update -y \nyum install -y httpd \nsystemctl enable httpd \nsystemctl start httpd \necho \"<h1> Holap, funciono desde $(hostname -f)</h1>\" > /var/www/html/index.html"
+                    }
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Servidor 2"
+                    }
+                ],
+                "AvailabilityZone": "us-east-1a"
+            }
+        },
+        "LOADBALANCER": {
+            "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "Properties": {
+                "IpAddressType": "ipv4",
+                "Name": "WebLoadBalancer",
+                "Scheme": "internet-facing",
+                "SecurityGroups": [
+                    {
+                        "Fn::GetAtt": [
+                            "SECURITYGROUP3",
+                            "GroupId"
+                        ]
+                    }
+                ],
+                "Subnets": ["subnet-0ce754561378f78c2", "subnet-05235c66dcf3bce8c"],
+                "Type": "application"
+            }
+        },
+        "HTTPLISTENER": {
+            "Type": "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties": {
+                "LoadBalancerArn": {
+                    "Ref": "LOADBALANCER"
+                },
+                "Port": "80",
+                "Protocol": "HTTP",
+                "DefaultActions": [
+                    {
+                        "Order": "1",
+                        "Type": "forward",
+                        "TargetGroupArn": {
+                            "Ref": "WEBTARGETGROUP"
+                        }
+                    }
+                ]
+            }
+        },
+        "WEBTARGETGROUP": {
+            "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+            "Properties": {
+                "Name": "WebTargetGroup",
+                "Port": "80",
+                "Protocol": "HTTP",
+                "TargetType": "instance",
+                "Targets": [
+                    {
+                        "Id": {
+                            "Ref": "SERVIDOR1"
+                        },
+                        "Port": "80"
+                    },
+                    {
+                        "Id": {
+                            "Ref": "SERVIDOR2"
+                        },
+                        "Port": "80"
+                    }
+                ],
+                "VpcId": {
+                    "Ref": "CustomVPC"
+                }
+            }
+        },
+        "WEBLAUNCHTEMPLATE": {
+            "Type": "AWS::EC2::LaunchTemplate",
+            "Properties": {
+                "LaunchTemplateName": "WebLaunchTemplate",
+                "LaunchTemplateData": {
+                    "ImageId": "ami-09d3b3274b6c5d4aa",
+                    "InstanceType": "t1.micro",
+                    "UserData": {
+                        "Fn::Base64": {
+                            "Fn::Sub": "#!/bin/bash \nyum update -y \nyum install -y httpd \nsystemctl enable httpd \nsystemctl start httpd \necho \"<h1> Holap, funciono desde $(hostname -f), me ejecute desde un auto-scaling group </h1>\" > /var/www/html/index.html"
+                        }
+                    },
+                    "KeyName": {
+                        "Ref": "KeyName"
+                    },
+                    "SecurityGroupIds": [
+                        {
+                            "Fn::GetAtt": [
+                                "SECURITYGROUP3",
+                                "GroupId"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "AUTOSCALINGGROUP": {
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "Properties": {
+                "AutoScalingGroupName": "WebAutoScalingGroup",
+                "DesiredCapacity": "1",
+                "AvailabilityZones": ["us-east-1a", "us-east-1b"],
+                "MaxSize": "2",
+                "MinSize": "1",
+                "VPCZoneIdentifier": {
+                    "Ref": "Subnets"
+                },
+                "LaunchTemplate": {
+                    "LaunchTemplateId": {
+                        "Ref": "WEBLAUNCHTEMPLATE"
+                    },
+                    "Version": {
+                        "Fn::GetAtt": [
+                            "WEBLAUNCHTEMPLATE", 
+                            "LatestVersionNumber"
+                        ]
+                    }
+                },
+                "TargetGroupARNs": [
+                    {
+                        "Ref": "WEBTARGETGROUP"
+                    }
+                ]
+            }
+        }
+    }
+}
